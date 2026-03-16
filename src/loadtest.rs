@@ -15,6 +15,7 @@ pub struct LoadTestSettings {
     pub duration_secs: u64,
     pub interval_ms: u64,
     pub timeout_secs: u64,
+    pub keep_alive: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -116,14 +117,18 @@ pub async fn run_load_test(
     let mut join_set = JoinSet::new();
     let interval = Duration::from_millis(settings.interval_ms);
     let timeout = Duration::from_secs(settings.timeout_secs);
-    let client = Arc::new(
-        Client::builder()
-            .pool_max_idle_per_host(settings.concurrency.saturating_mul(2))
-            .pool_idle_timeout(Duration::from_secs(30))
-            .tcp_nodelay(true)
-            .timeout(timeout)
-            .build()?,
-    );
+    let mut builder = Client::builder()
+        .pool_max_idle_per_host(settings.concurrency.saturating_mul(2))
+        .tcp_nodelay(true)
+        .timeout(timeout);
+
+    if settings.keep_alive {
+        builder = builder.pool_idle_timeout(Duration::from_secs(30));
+    } else {
+        builder = builder.pool_idle_timeout(None);
+    }
+
+    let client = Arc::new(builder.build()?);
 
     for _ in 0..settings.concurrency {
         let c = client.clone();

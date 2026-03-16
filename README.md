@@ -22,7 +22,7 @@
 
 ## 📸 Overview
 
-*(Add screenshots here)*
+![Screenshot](demo.png)
 
 ## 🛠️ Quick Start
 
@@ -48,9 +48,16 @@ Click the `↺ Reset` button in the top bar to restore the initial state.
 
 ## ⚙️ Performance Design
 
-- **Connection Pooling**: `HTTP Keep-Alive` is enabled by default to reuse TCP connections and minimize handshake overhead.
+- **Connection Pooling**: Toggleable `HTTP Keep-Alive` to reuse TCP connections and minimize handshake overhead.
 - **Lock-free Counting**: Uses atomic operations (`AtomicU64`) for high-performance metrics counting.
 - **Async I/O**: Fully asynchronous non-blocking I/O to maximize CPU and network bandwidth utilization.
+
+## 🤖 AI Declaration & Acknowledgments
+
+The core logic, GUI layout, and documentation of this project were primarily **co-created with AI**.
+
+- **Free to Use**: This project is fully open-source. Feel free to use it however you like, without any restrictions.
+- **Give a Star**: If you find this tool useful, please give it a **Star ⭐️**. It's the best way to support this project!
 
 ## 📦 Build for Release
 

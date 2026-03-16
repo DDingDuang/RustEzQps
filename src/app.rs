@@ -106,6 +106,7 @@ impl ApiQpsApp {
                 duration_secs: 60,
                 interval_ms: 10,
                 timeout_secs: 5,
+                keep_alive: true,
             },
             runtime: Arc::new(Runtime::new().expect("failed to create runtime")),
             run_state: RunState::Idle,
@@ -354,6 +355,7 @@ impl ApiQpsApp {
             duration_secs: 60,
             interval_ms: 10,
             timeout_secs: 5,
+            keep_alive: true,
         };
         self.run_state = RunState::Idle;
         self.latest_runtime_metrics = RuntimeMetrics::default();
@@ -573,6 +575,9 @@ impl eframe::App for ApiQpsApp {
                                         ui.end_row();
                                     });
             
+                                    ui.add_space(8.0);
+                                    ui.checkbox(&mut self.settings.keep_alive, t(self.language, I18nKey::KeepAlive));
+
                                     if let Some(err) = &self.generic_error {
                                         ui.add_space(4.0);
                                         ui.colored_label(Color32::from_rgb(255, 59, 48), err);
