@@ -3,7 +3,9 @@ use anyhow::{Result, anyhow};
 use hdrhistogram::Histogram;
 use reqwest::Client;
 use reqwest::header::HeaderMap;
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc::UnboundedSender;
@@ -27,6 +29,8 @@ pub struct RuntimeMetrics {
     pub timeout_requests: u64,
     pub qps: f64,
     pub avg_latency_ms: f64,
+    pub status_code_counts: Vec<(u16, u64)>,
+    pub transport_error_requests: u64,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -59,6 +63,8 @@ struct SharedCounters {
     failed: AtomicU64,
     timeout: AtomicU64,
     latency_total_us: AtomicU64,
+    status_codes: Mutex<HashMap<u16, u64>>,
+    transport_error: AtomicU64,
 }
 
 #[derive(Default)]
@@ -96,12 +102,20 @@ pub async fn run_load_test(
             let success = report_counters.success.load(Ordering::Relaxed);
             let failed = report_counters.failed.load(Ordering::Relaxed);
             let timeout = report_counters.timeout.load(Ordering::Relaxed);
+            let transport_error = report_counters.transport_error.load(Ordering::Relaxed);
             let latency_total_us = report_counters.latency_total_us.load(Ordering::Relaxed);
             let avg_latency_ms = if total > 0 {
                 latency_total_us as f64 / total as f64 / 1000.0
             } else {
                 0.0
             };
+            let mut status_code_counts: Vec<(u16, u64)> = report_counters
+                .status_codes
+                .lock()
+                .ok()
+                .map(|map| map.iter().map(|(code, count)| (*code, *count)).collect())
+                .unwrap_or_default();
+            status_code_counts.sort_by_key(|(code, _)| *code);
             let _ = progress_tx.send(EngineEvent::Progress(RuntimeMetrics {
                 elapsed_secs: elapsed,
                 total_requests: total,
@@ -110,6 +124,8 @@ pub async fn run_load_test(
                 timeout_requests: timeout,
                 qps: total as f64 / elapsed,
                 avg_latency_ms,
+                status_code_counts,
+                transport_error_requests: transport_error,
             }));
         }
     });
@@ -220,6 +236,9 @@ async fn worker_loop(
         match resp {
             Ok(r) => {
                 let status = r.status();
+                if let Ok(mut map) = counters.status_codes.lock() {
+                    *map.entry(status.as_u16()).or_insert(0) += 1;
+                }
                 let _ = r.bytes().await;
                 let latency_us = started.elapsed().as_micros() as u64;
                 let _ = hist.record(latency_us.max(1));
@@ -235,6 +254,7 @@ async fn worker_loop(
             }
             Err(e) => {
                 let msg = e.to_string();
+                counters.transport_error.fetch_add(1, Ordering::Relaxed);
                 let latency_us = started.elapsed().as_micros() as u64;
                 let _ = hist.record(latency_us.max(1));
                 counters
