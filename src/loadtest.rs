@@ -104,35 +104,8 @@ pub async fn run_load_test(
     let reporter = tokio::spawn(async move {
         while !report_stop.load(Ordering::Relaxed) && Instant::now() < deadline {
             tokio::time::sleep(Duration::from_millis(250)).await;
-            let elapsed = ticker_begin.elapsed().as_secs_f64().max(0.001);
-            let total = report_counters.total.load(Ordering::Relaxed);
-            let success = report_counters.success.load(Ordering::Relaxed);
-            let failed = report_counters.failed.load(Ordering::Relaxed);
-            let timeout = report_counters.timeout.load(Ordering::Relaxed);
-            let transport_error = report_counters.transport_error.load(Ordering::Relaxed);
-            let status_code_counts: Vec<(u16, u64)> = report_counters
-                .status_codes
-                .iter()
-                .enumerate()
-                .filter_map(|(code, count)| {
-                    let value = count.load(Ordering::Relaxed);
-                    if value > 0 {
-                        Some((code as u16, value))
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-            let _ = progress_tx.send(EngineEvent::Progress(RuntimeMetrics {
-                elapsed_secs: elapsed,
-                total_requests: total,
-                success_requests: success,
-                failed_requests: failed,
-                timeout_requests: timeout,
-                qps: total as f64 / elapsed,
-                status_code_counts,
-                transport_error_requests: transport_error,
-            }));
+            let metrics = build_runtime_metrics(&report_counters, ticker_begin.elapsed().as_secs_f64());
+            let _ = progress_tx.send(EngineEvent::Progress(metrics));
         }
     });
 
@@ -177,6 +150,10 @@ pub async fn run_load_test(
 
     stop.store(true, Ordering::Relaxed);
     let _ = reporter.await;
+    let _ = events.send(EngineEvent::Progress(build_runtime_metrics(
+        &counters,
+        begin.elapsed().as_secs_f64(),
+    )));
 
     let elapsed = begin.elapsed().as_secs_f64().max(0.001);
     let total = counters.total.load(Ordering::Relaxed);
@@ -223,9 +200,6 @@ async fn worker_loop(
     counters: Arc<SharedCounters>,
 ) -> Result<WorkerResult> {
     let mut hist = Histogram::<u64>::new(3)?;
-    let mut local_status = [0_u64; 600];
-    let mut batch_count: u32 = 0;
-    const FLUSH_INTERVAL: u32 = 100;
     let base_request = build_request(client.as_ref(), &template);
 
     while !stop.load(Ordering::Relaxed) && Instant::now() < deadline {
@@ -240,7 +214,7 @@ async fn worker_loop(
             Ok(r) => {
                 let status = r.status();
                 if let Some(code_slot) = status_code_slot(status.as_u16()) {
-                    local_status[code_slot] += 1;
+                    counters.status_codes[code_slot].fetch_add(1, Ordering::Relaxed);
                 }
                 let body_ok = r.bytes().await.is_ok();
                 let latency_us = started.elapsed().as_micros() as u64;
@@ -266,31 +240,45 @@ async fn worker_loop(
             }
         }
 
-        batch_count += 1;
-        if batch_count >= FLUSH_INTERVAL {
-            flush_local_status(&counters, &mut local_status);
-            batch_count = 0;
-        }
-
         if !interval.is_zero() {
             tokio::time::sleep(interval).await;
         }
     }
-
-    // Flush remaining local counts
-    flush_local_status(&counters, &mut local_status);
 
     Ok(WorkerResult {
         histogram: Some(hist),
     })
 }
 
-fn flush_local_status(counters: &SharedCounters, local: &mut [u64; 600]) {
-    for (code, count) in local.iter_mut().enumerate() {
-        if *count > 0 {
-            counters.status_codes[code].fetch_add(*count, Ordering::Relaxed);
-            *count = 0;
-        }
+fn build_runtime_metrics(counters: &SharedCounters, elapsed_secs: f64) -> RuntimeMetrics {
+    let elapsed = elapsed_secs.max(0.001);
+    let total = counters.total.load(Ordering::Relaxed);
+    let success = counters.success.load(Ordering::Relaxed);
+    let failed = counters.failed.load(Ordering::Relaxed);
+    let timeout = counters.timeout.load(Ordering::Relaxed);
+    let transport_error = counters.transport_error.load(Ordering::Relaxed);
+    let status_code_counts: Vec<(u16, u64)> = counters
+        .status_codes
+        .iter()
+        .enumerate()
+        .filter_map(|(code, count)| {
+            let value = count.load(Ordering::Relaxed);
+            if value > 0 {
+                Some((code as u16, value))
+            } else {
+                None
+            }
+        })
+        .collect();
+    RuntimeMetrics {
+        elapsed_secs: elapsed,
+        total_requests: total,
+        success_requests: success,
+        failed_requests: failed,
+        timeout_requests: timeout,
+        qps: total as f64 / elapsed,
+        status_code_counts,
+        transport_error_requests: transport_error,
     }
 }
 
