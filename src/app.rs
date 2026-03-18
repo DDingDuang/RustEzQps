@@ -124,8 +124,8 @@ impl ApiQpsApp {
             generic_error: runtime_error,
             settings: LoadTestSettings {
                 concurrency: 100,
-                duration_secs: 60,
-                interval_ms: 10,
+                duration_secs: 10,
+                interval_ms: 1,
                 timeout_secs: 5,
                 keep_alive: true,
             },
@@ -341,8 +341,8 @@ impl ApiQpsApp {
         self.generic_error = None;
         self.settings = LoadTestSettings {
             concurrency: 100,
-            duration_secs: 60,
-            interval_ms: 10,
+            duration_secs: 10,
+            interval_ms: 1,
             timeout_secs: 5,
             keep_alive: true,
         };
