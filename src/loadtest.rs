@@ -28,7 +28,6 @@ pub struct RuntimeMetrics {
     pub failed_requests: u64,
     pub timeout_requests: u64,
     pub qps: f64,
-    pub avg_latency_ms: f64,
     pub status_code_counts: Vec<(u16, u64)>,
     pub transport_error_requests: u64,
 }
@@ -46,7 +45,6 @@ pub struct FinalMetrics {
     pub p95_latency_ms: f64,
     pub p99_latency_ms: f64,
     pub max_latency_ms: f64,
-    pub last_error: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -62,7 +60,6 @@ struct SharedCounters {
     success: AtomicU64,
     failed: AtomicU64,
     timeout: AtomicU64,
-    latency_total_us: AtomicU64,
     status_codes: Mutex<HashMap<u16, u64>>,
     transport_error: AtomicU64,
 }
@@ -70,7 +67,6 @@ struct SharedCounters {
 #[derive(Default)]
 struct WorkerResult {
     histogram: Option<Histogram<u64>>,
-    last_error: Option<String>,
 }
 
 pub async fn run_load_test(
@@ -103,12 +99,6 @@ pub async fn run_load_test(
             let failed = report_counters.failed.load(Ordering::Relaxed);
             let timeout = report_counters.timeout.load(Ordering::Relaxed);
             let transport_error = report_counters.transport_error.load(Ordering::Relaxed);
-            let latency_total_us = report_counters.latency_total_us.load(Ordering::Relaxed);
-            let avg_latency_ms = if total > 0 {
-                latency_total_us as f64 / total as f64 / 1000.0
-            } else {
-                0.0
-            };
             let mut status_code_counts: Vec<(u16, u64)> = report_counters
                 .status_codes
                 .lock()
@@ -123,7 +113,6 @@ pub async fn run_load_test(
                 failed_requests: failed,
                 timeout_requests: timeout,
                 qps: total as f64 / elapsed,
-                avg_latency_ms,
                 status_code_counts,
                 transport_error_requests: transport_error,
             }));
@@ -155,23 +144,15 @@ pub async fn run_load_test(
     }
 
     let mut merged = Histogram::<u64>::new(3)?;
-    let mut last_error = None;
     while let Some(res) = join_set.join_next().await {
         match res {
             Ok(Ok(worker)) => {
                 if let Some(h) = worker.histogram {
                     let _ = merged.add(&h);
                 }
-                if worker.last_error.is_some() {
-                    last_error = worker.last_error;
-                }
             }
-            Ok(Err(e)) => {
-                last_error = Some(e.to_string());
-            }
-            Err(e) => {
-                last_error = Some(e.to_string());
-            }
+            Ok(Err(_e)) => {}
+            Err(_e) => {}
         }
     }
 
@@ -197,7 +178,6 @@ pub async fn run_load_test(
             p95_latency_ms: merged.value_at_quantile(0.95) as f64 / 1000.0,
             p99_latency_ms: merged.value_at_quantile(0.99) as f64 / 1000.0,
             max_latency_ms: merged.max() as f64 / 1000.0,
-            last_error,
         }
     } else {
         FinalMetrics {
@@ -207,7 +187,6 @@ pub async fn run_load_test(
             failed_requests: failed,
             timeout_requests: timeout_count,
             qps: total as f64 / elapsed,
-            last_error,
             ..Default::default()
         }
     };
@@ -225,7 +204,6 @@ async fn worker_loop(
     counters: Arc<SharedCounters>,
 ) -> Result<WorkerResult> {
     let mut hist = Histogram::<u64>::new(3)?;
-    let mut last_error = None;
 
     while !stop.load(Ordering::Relaxed) && Instant::now() < deadline {
         let started = Instant::now();
@@ -242,14 +220,10 @@ async fn worker_loop(
                 let _ = r.bytes().await;
                 let latency_us = started.elapsed().as_micros() as u64;
                 let _ = hist.record(latency_us.max(1));
-                counters
-                    .latency_total_us
-                    .fetch_add(latency_us.max(1), Ordering::Relaxed);
                 if status.is_success() {
                     counters.success.fetch_add(1, Ordering::Relaxed);
                 } else {
                     counters.failed.fetch_add(1, Ordering::Relaxed);
-                    last_error = Some(format!("HTTP {}", status.as_u16()));
                 }
             }
             Err(e) => {
@@ -257,15 +231,11 @@ async fn worker_loop(
                 counters.transport_error.fetch_add(1, Ordering::Relaxed);
                 let latency_us = started.elapsed().as_micros() as u64;
                 let _ = hist.record(latency_us.max(1));
-                counters
-                    .latency_total_us
-                    .fetch_add(latency_us.max(1), Ordering::Relaxed);
                 if msg.contains("timed out") {
                     counters.timeout.fetch_add(1, Ordering::Relaxed);
                 } else {
                     counters.failed.fetch_add(1, Ordering::Relaxed);
                 }
-                last_error = Some(msg);
             }
         }
 
@@ -276,7 +246,6 @@ async fn worker_loop(
 
     Ok(WorkerResult {
         histogram: Some(hist),
-        last_error,
     })
 }
 

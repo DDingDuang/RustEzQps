@@ -25,8 +25,6 @@ pub struct ApiQpsApp {
     latest_runtime_metrics: RuntimeMetrics,
     final_metrics: Option<FinalMetrics>,
     // response_preview: ResponsePreview, // unused
-    qps_history: Vec<f64>,
-    latency_history: Vec<f64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)] // Added derive
@@ -141,8 +139,6 @@ impl ApiQpsApp {
                 body_preview: "压测模式默认不抓取响应体".to_owned(),
             },
             */
-            qps_history: Vec::new(),
-            latency_history: Vec::new(),
         };
         app.auto_convert_from_curl();
         app
@@ -164,8 +160,6 @@ impl ApiQpsApp {
         let (tx, rx) = unbounded_channel();
         self.final_metrics = None;
         self.latest_runtime_metrics = RuntimeMetrics::default();
-        self.qps_history.clear();
-        self.latency_history.clear();
         /*
         self.response_preview.status = "RUNNING".to_owned();
         self.response_preview.time_ms = "-".to_owned();
@@ -199,11 +193,6 @@ impl ApiQpsApp {
                 match ev {
                     EngineEvent::Progress(m) => {
                         self.latest_runtime_metrics = m;
-                        Self::push_history(&mut self.qps_history, self.latest_runtime_metrics.qps);
-                        Self::push_history(
-                            &mut self.latency_history,
-                            self.latest_runtime_metrics.avg_latency_ms,
-                        );
                         /*
                         self.response_preview.time_ms =
                             format!("{:.2} ms", self.latest_runtime_metrics.avg_latency_ms);
@@ -354,13 +343,6 @@ impl ApiQpsApp {
         }
     }
 
-    fn push_history(history: &mut Vec<f64>, v: f64) {
-        history.push(v);
-        if history.len() > 180 {
-            history.remove(0);
-        }
-    }
-
     fn reset_state(&mut self) {
         self.curl_input = "curl -X POST -H 'Content-Type: application/json' -d '{\"key\":\"value\"}' https://api.example.com/endpoint".to_owned();
         self.request_draft = EditableRequest {
@@ -389,8 +371,6 @@ impl ApiQpsApp {
             body_preview: "压测模式默认不抓取响应体".to_owned(),
         };
         */
-        self.qps_history.clear();
-        self.latency_history.clear();
         self.auto_convert_from_curl();
     }
 }
@@ -651,16 +631,6 @@ impl eframe::App for ApiQpsApp {
                                             ui.end_row();
                                         });
 
-                                    ui.add_space(8.0);
-                                    ui.columns(2, |cols| {
-                                        render_sparkline(&mut cols[0], "QPS 实时趋势 (Requests/sec)", &self.qps_history, Color32::from_rgb(0, 122, 255));
-                                        render_sparkline(
-                                            &mut cols[1],
-                                            "响应延迟趋势 (Avg Latency/ms)",
-                                            &self.latency_history,
-                                            Color32::from_rgb(255, 149, 0),
-                                        );
-                                    });
                                     ui.add_space(6.0);
                                     render_status_code_bars(
                                         ui,
@@ -671,26 +641,38 @@ impl eframe::App for ApiQpsApp {
                                     if let Some(final_metrics) = &self.final_metrics {
                                         ui.separator();
                                         ui.label(RichText::new("压测最终报告").strong());
-                                        ui.label(format!(
-                                            "耗时: {:.2}s | 总数: {} | 成功: {} | 失败: {} | 超时: {} | 平均QPS: {:.1}",
-                                            final_metrics.elapsed_secs,
-                                            final_metrics.total_requests,
-                                            final_metrics.success_requests,
-                                            final_metrics.failed_requests,
-                                            final_metrics.timeout_requests,
-                                            final_metrics.qps
-                                        ));
-                                        ui.label(format!(
-                                            "延迟: 平均 {:.2}ms | P50 {:.2}ms | P95 {:.2}ms | P99 {:.2}ms | Max {:.2}ms",
-                                            final_metrics.avg_latency_ms,
-                                            final_metrics.p50_latency_ms,
-                                            final_metrics.p95_latency_ms,
-                                            final_metrics.p99_latency_ms,
-                                            final_metrics.max_latency_ms
-                                        ));
-                                        if let Some(err) = &final_metrics.last_error {
-                                            ui.colored_label(Color32::from_rgb(255, 59, 48), format!("Last Error: {}", err));
-                                        }
+                                        egui::Grid::new("final_report_grid")
+                                            .num_columns(2)
+                                            .spacing([12.0, 6.0])
+                                            .show(ui, |ui| {
+                                                ui.label(RichText::new("耗时").color(Color32::from_rgb(142, 142, 147)));
+                                                ui.label(format!("{:.2}s", final_metrics.elapsed_secs));
+                                                ui.end_row();
+                                                ui.label(RichText::new("总请求").color(Color32::from_rgb(142, 142, 147)));
+                                                ui.label(format!("{}", final_metrics.total_requests));
+                                                ui.end_row();
+                                                ui.label(RichText::new("成功 / 失败 / 超时").color(Color32::from_rgb(142, 142, 147)));
+                                                ui.label(format!(
+                                                    "{} / {} / {}",
+                                                    final_metrics.success_requests,
+                                                    final_metrics.failed_requests,
+                                                    final_metrics.timeout_requests
+                                                ));
+                                                ui.end_row();
+                                                ui.label(RichText::new("平均QPS").color(Color32::from_rgb(142, 142, 147)));
+                                                ui.label(format!("{:.1}", final_metrics.qps));
+                                                ui.end_row();
+                                                ui.label(RichText::new("延迟 (Avg/P50/P95/P99/Max)").color(Color32::from_rgb(142, 142, 147)));
+                                                ui.label(format!(
+                                                    "{:.2} / {:.2} / {:.2} / {:.2} / {:.2} ms",
+                                                    final_metrics.avg_latency_ms,
+                                                    final_metrics.p50_latency_ms,
+                                                    final_metrics.p95_latency_ms,
+                                                    final_metrics.p99_latency_ms,
+                                                    final_metrics.max_latency_ms
+                                                ));
+                                                ui.end_row();
+                                            });
                                     }
                                 });
                             });
@@ -743,164 +725,6 @@ fn render_metric_card(ui: &mut egui::Ui, label: &str, value: String) {
         });
 }
 
-fn render_sparkline(ui: &mut egui::Ui, title: &str, data: &[f64], color: Color32) {
-    ui.label(RichText::new(title).size(13.0).strong().color(Color32::from_rgb(29, 29, 31)));
-    
-    let height = 148.0;
-    let (response, painter) = ui.allocate_painter(egui::vec2(ui.available_width(), height), Sense::hover());
-    let rect = response.rect;
-
-    // Background and Border
-    painter.rect_filled(rect, egui::CornerRadius::same(12), Color32::from_rgb(255, 255, 255));
-    painter.rect_stroke(
-        rect,
-        egui::CornerRadius::same(12),
-        Stroke::new(1.0, Color32::from_rgb(229, 229, 234)),
-        egui::StrokeKind::Outside,
-    );
-
-    // Margins
-    let margin_left = 50.0;
-    let margin_right = 20.0;
-    let margin_top = 12.0;
-    let margin_bottom = 20.0;
-
-    let chart_rect = egui::Rect::from_min_max(
-        rect.min + egui::vec2(margin_left, margin_top),
-        rect.max - egui::vec2(margin_right, margin_bottom),
-    );
-
-    // Grid and Axes
-    let font_id = FontId::new(10.5, FontFamily::Proportional);
-    let text_color = Color32::from_rgb(142, 142, 147);
-
-    // Calculate Range
-    let (min_val, max_val) = if data.is_empty() {
-        (0.0, 10.0)
-    } else {
-        let mut min = data[0];
-        let mut max = data[0];
-        for &v in data {
-            if v < min { min = v; }
-            if v > max { max = v; }
-        }
-        if (max - min).abs() < 1e-6 {
-            (min.max(0.0), max + 10.0)
-        } else {
-            let range = max - min;
-            ((min - range * 0.1).max(0.0), max + range * 0.1)
-        }
-    };
-    
-    let range_val = (max_val - min_val).max(1e-6);
-
-    // Draw Grid Lines (Horizontal)
-    let grid_steps = 4;
-    for i in 0..=grid_steps {
-        let t = i as f64 / grid_steps as f64;
-        let value = min_val + t * range_val;
-        let y = chart_rect.bottom() - (t as f32 * chart_rect.height());
-
-        // Grid Line
-        painter.line_segment(
-            [egui::pos2(chart_rect.left(), y), egui::pos2(chart_rect.right(), y)],
-            Stroke::new(1.0, Color32::from_rgb(242, 242, 247)),
-        );
-
-        // Y-Axis Label
-        painter.text(
-            egui::pos2(chart_rect.left() - 5.0, y),
-            egui::Align2::RIGHT_CENTER,
-            format!("{:.1}", value),
-            font_id.clone(),
-            text_color,
-        );
-    }
-    
-    // X-Axis Label
-    painter.text(
-        chart_rect.right_bottom() + egui::vec2(0.0, 10.0),
-        egui::Align2::RIGHT_TOP,
-        "Time",
-        font_id.clone(),
-        text_color,
-    );
-
-    // Draw Data
-    if data.len() >= 2 {
-        let step_x = chart_rect.width() / ((data.len() - 1) as f32);
-        let points: Vec<egui::Pos2> = data.iter().enumerate().map(|(i, &v)| {
-            let x = chart_rect.left() + (i as f32 * step_x);
-            let t = (v - min_val) / range_val;
-            let y = chart_rect.bottom() - (t as f32 * chart_rect.height());
-            egui::pos2(x, y)
-        }).collect();
-
-        let chart_painter = painter.with_clip_rect(chart_rect);
-        
-        // Fill Area
-        if let Some(first) = points.first() {
-            if let Some(last) = points.last() {
-                let mut shape_points = points.clone();
-                shape_points.push(egui::pos2(last.x, chart_rect.bottom()));
-                shape_points.push(egui::pos2(first.x, chart_rect.bottom()));
-                let fill_color = color.linear_multiply(0.1);
-                chart_painter.add(egui::Shape::convex_polygon(shape_points, fill_color, Stroke::NONE));
-            }
-        }
-        
-        // Line
-        chart_painter.add(egui::Shape::line(points.clone(), Stroke::new(2.0, color)));
-
-        // Hover Effect
-        if let Some(hover_pos) = response.hover_pos() {
-            if chart_rect.contains(hover_pos) {
-                let relative_x = hover_pos.x - chart_rect.left();
-                let idx = (relative_x / step_x).round() as usize;
-                if idx < points.len() {
-                    let point = points[idx];
-                    let value = data[idx];
-
-                    // Vertical Line
-                    chart_painter.line_segment(
-                        [egui::pos2(point.x, chart_rect.top()), egui::pos2(point.x, chart_rect.bottom())],
-                        Stroke::new(1.0, Color32::from_black_alpha(20)),
-                    );
-
-                    // Point highlight
-                    painter.circle_filled(point, 5.0, color);
-                    painter.circle_stroke(point, 5.0, Stroke::new(2.0, Color32::WHITE));
-
-                    // Tooltip
-                    let text = format!("{:.2}", value);
-                    let galley = painter.layout_no_wrap(text, FontId::new(13.0, FontFamily::Proportional), Color32::WHITE);
-                    let padding = egui::vec2(10.0, 6.0);
-                    let tooltip_size = galley.rect.size() + padding * 2.0;
-                    
-                    let mut tooltip_pos = point - egui::vec2(tooltip_size.x / 2.0, tooltip_size.y + 10.0);
-                    
-                    // Constrain tooltip to main rect
-                    if tooltip_pos.x < rect.left() { tooltip_pos.x = rect.left(); }
-                    if tooltip_pos.x + tooltip_size.x > rect.right() { tooltip_pos.x = rect.right() - tooltip_size.x; }
-                    if tooltip_pos.y < rect.top() { tooltip_pos.y = point.y + 10.0; } // Flip to bottom if too high
-
-                    let tooltip_rect = egui::Rect::from_min_size(tooltip_pos, tooltip_size);
-                    
-                    // Tooltip Background
-                    painter.rect_filled(
-                        tooltip_rect,
-                        egui::CornerRadius::same(8),
-                        Color32::from_rgb(29, 29, 31),
-                    );
-                    
-                    // Tooltip Text
-                    painter.galley(tooltip_rect.min + padding, galley, Color32::WHITE);
-                }
-            }
-        }
-    }
-}
-
 fn render_status_code_bars(
     ui: &mut egui::Ui,
     title: &str,
@@ -923,7 +747,7 @@ fn render_status_code_bars(
     let margin_left = 52.0;
     let margin_right = 20.0;
     let margin_top = 10.0;
-    let margin_bottom = 22.0;
+    let margin_bottom = 28.0;
     let chart_rect = egui::Rect::from_min_max(
         rect.min + egui::vec2(margin_left, margin_top),
         rect.max - egui::vec2(margin_right, margin_bottom),
@@ -987,25 +811,12 @@ fn render_status_code_bars(
         Stroke::new(1.0, Color32::from_rgb(209, 209, 214)),
     );
 
-    painter.text(
-        egui::pos2(chart_rect.left() - 36.0, chart_rect.top() - 4.0),
-        egui::Align2::LEFT_TOP,
-        "数量",
-        font_id.clone(),
-        text_color,
-    );
-    painter.text(
-        egui::pos2(chart_rect.right(), chart_rect.bottom() + 14.0),
-        egui::Align2::RIGHT_TOP,
-        "HTTP 状态码",
-        font_id.clone(),
-        text_color,
-    );
-
     let n = bars.len() as f32;
     let slot_w = (chart_rect.width() / n).max(10.0);
-    let bar_w = (slot_w * 0.5).max(7.0);
+    let bar_w = (slot_w * 0.38).max(4.0);
     let bar_painter = painter.with_clip_rect(chart_rect.expand2(egui::vec2(0.0, 2.0)));
+    let max_x_labels = ((chart_rect.width() / 34.0).floor() as usize).max(1);
+    let label_step = bars.len().div_ceil(max_x_labels).max(1);
 
     let mut hovered: Option<(egui::Pos2, String, u64, Color32)> = None;
 
@@ -1025,20 +836,24 @@ fn render_status_code_bars(
             egui::StrokeKind::Outside,
         );
 
-        painter.text(
-            egui::pos2(center_x, chart_rect.bottom() + 6.0),
-            egui::Align2::CENTER_TOP,
-            label,
-            font_id.clone(),
-            text_color,
-        );
-        painter.text(
-            bar_rect.center(),
-            egui::Align2::CENTER_CENTER,
-            format!("{count}"),
-            FontId::new(10.5, FontFamily::Proportional),
-            Color32::WHITE,
-        );
+        if idx % label_step == 0 || idx + 1 == bars.len() {
+            painter.text(
+                egui::pos2(center_x, chart_rect.bottom() + 6.0),
+                egui::Align2::CENTER_TOP,
+                label,
+                font_id.clone(),
+                text_color,
+            );
+        }
+        if bar_rect.height() >= 14.0 && bar_w >= 10.0 {
+            painter.text(
+                bar_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                format!("{count}"),
+                FontId::new(9.5, FontFamily::Proportional),
+                Color32::WHITE,
+            );
+        }
 
         if let Some(pos) = response.hover_pos() {
             if bar_rect.contains(pos) {
