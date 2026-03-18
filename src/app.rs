@@ -2,6 +2,7 @@ use crate::curl_parser::{RequestTemplate, parse_curl};
 use crate::i18n::{I18nKey, Language, t};
 use crate::loadtest::{EngineEvent, FinalMetrics, LoadTestSettings, RuntimeMetrics, run_load_test};
 use anyhow::{Result, anyhow};
+use bytes::Bytes;
 use eframe::CreationContext;
 use eframe::egui::{self, Color32, FontData, FontDefinitions, FontFamily, FontId, RichText, Sense, Stroke, TextEdit};
 use reqwest::Method;
@@ -24,10 +25,9 @@ pub struct ApiQpsApp {
     run_state: RunState,
     latest_runtime_metrics: RuntimeMetrics,
     final_metrics: Option<FinalMetrics>,
-    // response_preview: ResponsePreview, // unused
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)] // Added derive
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct EditableRequest {
     api_url: String,
     method: String,
@@ -35,21 +35,11 @@ struct EditableRequest {
     body: String,
 }
 
-#[derive(Clone, Debug)] // Added derive
+#[derive(Clone, Debug)]
 struct ConvertStatus {
     ok: bool,
     message: String,
 }
-
-/*
-#[derive(Clone, Debug)] // Added derive
-struct ResponsePreview {
-    status: String,
-    time_ms: String,
-    size: String,
-    body_preview: String,
-}
-*/
 
 enum RunState {
     Idle,
@@ -131,14 +121,6 @@ impl ApiQpsApp {
             run_state: RunState::Idle,
             latest_runtime_metrics: RuntimeMetrics::default(),
             final_metrics: None,
-            /*
-            response_preview: ResponsePreview {
-                status: "-".to_owned(),
-                time_ms: "-".to_owned(),
-                size: "-".to_owned(),
-                body_preview: "压测模式默认不抓取响应体".to_owned(),
-            },
-            */
         };
         app.auto_convert_from_curl();
         app
@@ -160,12 +142,6 @@ impl ApiQpsApp {
         let (tx, rx) = unbounded_channel();
         self.final_metrics = None;
         self.latest_runtime_metrics = RuntimeMetrics::default();
-        /*
-        self.response_preview.status = "RUNNING".to_owned();
-        self.response_preview.time_ms = "-".to_owned();
-        self.response_preview.size = "-".to_owned();
-        self.response_preview.body_preview = "压测进行中".to_owned();
-        */
 
         let runtime = self.runtime.clone();
         runtime.spawn(async move {
@@ -193,35 +169,14 @@ impl ApiQpsApp {
                 match ev {
                     EngineEvent::Progress(m) => {
                         self.latest_runtime_metrics = m;
-                        /*
-                        self.response_preview.time_ms =
-                            format!("{:.2} ms", self.latest_runtime_metrics.avg_latency_ms);
-                        */
                     }
                     EngineEvent::Completed(m) => {
-                        /*
-                        self.response_preview.status = if m.failed_requests == 0 && m.timeout_requests == 0 {
-                            "200".to_owned()
-                        } else {
-                            "MIXED".to_owned()
-                        };
-                        self.response_preview.time_ms = format!("{:.2} ms", m.avg_latency_ms);
-                        self.response_preview.size = "-".to_owned();
-                        self.response_preview.body_preview = m
-                            .last_error
-                            .clone()
-                            .unwrap_or_else(|| "压测完成，默认不采样响应体".to_owned());
-                        */
                         self.final_metrics = Some(m);
                         should_idle = true;
                     }
                     EngineEvent::Failed(e) => {
                         self.generic_error =
                             Some(format!("{}: {e}", t(self.language, I18nKey::GenericError)));
-                        /*
-                        self.response_preview.status = "ERROR".to_owned();
-                        self.response_preview.body_preview = e;
-                        */
                         should_idle = true;
                     }
                 }
@@ -310,7 +265,7 @@ impl ApiQpsApp {
         let body = if Self::method_supports_body(&method) && !self.request_draft.body.trim().is_empty()
         {
             let normalized = Self::normalize_possible_json_body(&self.request_draft.body);
-            Some(normalized.as_bytes().to_vec())
+            Some(Bytes::from(normalized.into_bytes()))
         } else {
             None
         };
@@ -363,14 +318,6 @@ impl ApiQpsApp {
         self.run_state = RunState::Idle;
         self.latest_runtime_metrics = RuntimeMetrics::default();
         self.final_metrics = None;
-        /*
-        self.response_preview = ResponsePreview {
-            status: "-".to_owned(),
-            time_ms: "-".to_owned(),
-            size: "-".to_owned(),
-            body_preview: "压测模式默认不抓取响应体".to_owned(),
-        };
-        */
         self.auto_convert_from_curl();
     }
 }
@@ -378,7 +325,9 @@ impl ApiQpsApp {
 impl eframe::App for ApiQpsApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.consume_events();
-        ctx.request_repaint_after(std::time::Duration::from_millis(60));
+        if self.is_running() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(60));
+        }
 
         egui::TopBottomPanel::top("top_bar")
             .frame(egui::Frame::new()
@@ -621,11 +570,11 @@ impl eframe::App for ApiQpsApp {
                                         .min_col_width((ui.available_width()) / 3.0)
                                         .show(ui, |ui| {
                                             render_metric_card(ui, t(self.language, I18nKey::TotalRequests), format!("{}", self.latest_runtime_metrics.total_requests));
-                                            render_metric_card(ui, "Success", format!("{}", self.latest_runtime_metrics.success_requests));
+                                            render_metric_card(ui, t(self.language, I18nKey::Success), format!("{}", self.latest_runtime_metrics.success_requests));
                                             render_metric_card(ui, t(self.language, I18nKey::Qps), format!("{:.1}", self.latest_runtime_metrics.qps));
                                             ui.end_row();
 
-                                            render_metric_card(ui, "Elapsed", format!("{:.2}s", self.latest_runtime_metrics.elapsed_secs));
+                                            render_metric_card(ui, t(self.language, I18nKey::Elapsed), format!("{:.2}s", self.latest_runtime_metrics.elapsed_secs));
                                             render_metric_card(ui, t(self.language, I18nKey::Errors), format!("{}", errors));
                                             render_metric_card(ui, t(self.language, I18nKey::P95Latency), p95);
                                             ui.end_row();
@@ -634,24 +583,24 @@ impl eframe::App for ApiQpsApp {
                                     ui.add_space(6.0);
                                     render_status_code_bars(
                                         ui,
-                                        "HTTP 状态码分布（实时）",
+                                        self.language,
                                         &self.latest_runtime_metrics.status_code_counts,
                                         self.latest_runtime_metrics.transport_error_requests,
                                     );
                                     if let Some(final_metrics) = &self.final_metrics {
                                         ui.separator();
-                                        ui.label(RichText::new("压测最终报告").strong());
+                                        ui.label(RichText::new(t(self.language, I18nKey::FinalReport)).strong());
                                         egui::Grid::new("final_report_grid")
                                             .num_columns(2)
                                             .spacing([12.0, 6.0])
                                             .show(ui, |ui| {
-                                                ui.label(RichText::new("耗时").color(Color32::from_rgb(142, 142, 147)));
+                                                ui.label(RichText::new(t(self.language, I18nKey::ElapsedTime)).color(Color32::from_rgb(142, 142, 147)));
                                                 ui.label(format!("{:.2}s", final_metrics.elapsed_secs));
                                                 ui.end_row();
-                                                ui.label(RichText::new("总请求").color(Color32::from_rgb(142, 142, 147)));
+                                                ui.label(RichText::new(t(self.language, I18nKey::TotalRequestsFinal)).color(Color32::from_rgb(142, 142, 147)));
                                                 ui.label(format!("{}", final_metrics.total_requests));
                                                 ui.end_row();
-                                                ui.label(RichText::new("成功 / 失败 / 超时").color(Color32::from_rgb(142, 142, 147)));
+                                                ui.label(RichText::new(t(self.language, I18nKey::SuccessFailTimeout)).color(Color32::from_rgb(142, 142, 147)));
                                                 ui.label(format!(
                                                     "{} / {} / {}",
                                                     final_metrics.success_requests,
@@ -659,10 +608,10 @@ impl eframe::App for ApiQpsApp {
                                                     final_metrics.timeout_requests
                                                 ));
                                                 ui.end_row();
-                                                ui.label(RichText::new("平均QPS").color(Color32::from_rgb(142, 142, 147)));
+                                                ui.label(RichText::new(t(self.language, I18nKey::AvgQps)).color(Color32::from_rgb(142, 142, 147)));
                                                 ui.label(format!("{:.1}", final_metrics.qps));
                                                 ui.end_row();
-                                                ui.label(RichText::new("延迟 (Avg/P50/P95/P99/Max)").color(Color32::from_rgb(142, 142, 147)));
+                                                ui.label(RichText::new(t(self.language, I18nKey::LatencyDetail)).color(Color32::from_rgb(142, 142, 147)));
                                                 ui.label(format!(
                                                     "{:.2} / {:.2} / {:.2} / {:.2} / {:.2} ms",
                                                     final_metrics.avg_latency_ms,
@@ -727,11 +676,11 @@ fn render_metric_card(ui: &mut egui::Ui, label: &str, value: String) {
 
 fn render_status_code_bars(
     ui: &mut egui::Ui,
-    title: &str,
+    language: Language,
     status_counts: &[(u16, u64)],
     transport_error_requests: u64,
 ) {
-    ui.label(RichText::new(title).size(13.0).strong().color(Color32::from_rgb(29, 29, 31)));
+    ui.label(RichText::new(t(language, I18nKey::StatusCodeDist)).size(13.0).strong().color(Color32::from_rgb(29, 29, 31)));
     let height = 156.0;
     let (response, painter) = ui.allocate_painter(egui::vec2(ui.available_width(), height), Sense::hover());
     let rect = response.rect;
@@ -760,7 +709,7 @@ fn render_status_code_bars(
         painter.text(
             chart_rect.center(),
             egui::Align2::CENTER_CENTER,
-            "等待首个响应或错误数据",
+            t(language, I18nKey::WaitingData),
             FontId::new(12.0, FontFamily::Proportional),
             text_color,
         );

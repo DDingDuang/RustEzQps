@@ -1,4 +1,5 @@
 use anyhow::{Context, Result, anyhow};
+use bytes::Bytes;
 use reqwest::Method;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue, HOST};
 use std::str::FromStr;
@@ -9,7 +10,7 @@ pub struct RequestTemplate {
     pub method: Method,
     pub url: String,
     pub headers: HeaderMap,
-    pub body: Option<Vec<u8>>,
+    pub body: Option<Bytes>,
 }
 
 pub fn parse_curl(input: &str) -> Result<RequestTemplate> {
@@ -20,7 +21,7 @@ pub fn parse_curl(input: &str) -> Result<RequestTemplate> {
 
     let mut method = Method::GET;
     let mut headers = HeaderMap::new();
-    let mut body: Option<Vec<u8>> = None;
+    let mut body: Option<Bytes> = None;
     let mut url: Option<String> = None;
 
     let mut idx = 0usize;
@@ -49,7 +50,7 @@ pub fn parse_curl(input: &str) -> Result<RequestTemplate> {
             "-d" | "--data" | "--data-raw" | "--data-binary" => {
                 idx += 1;
                 let b = parts.get(idx).ok_or_else(|| anyhow!("缺少 Body"))?;
-                body = Some(b.as_bytes().to_vec());
+                body = Some(Bytes::from(b.as_bytes().to_vec()));
                 if method == Method::GET {
                     method = Method::POST;
                 }

@@ -2,7 +2,6 @@ use crate::curl_parser::RequestTemplate;
 use anyhow::{Result, anyhow};
 use hdrhistogram::Histogram;
 use reqwest::Client;
-use reqwest::header::HeaderMap;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -130,7 +129,9 @@ pub async fn run_load_test(
     if settings.keep_alive {
         builder = builder.pool_idle_timeout(Duration::from_secs(30));
     } else {
-        builder = builder.pool_idle_timeout(None);
+        builder = builder
+            .pool_idle_timeout(Some(Duration::ZERO))
+            .pool_max_idle_per_host(0);
     }
 
     let client = Arc::new(builder.build()?);
@@ -204,6 +205,9 @@ async fn worker_loop(
     counters: Arc<SharedCounters>,
 ) -> Result<WorkerResult> {
     let mut hist = Histogram::<u64>::new(3)?;
+    let mut local_status: HashMap<u16, u64> = HashMap::new();
+    let mut batch_count: u32 = 0;
+    const FLUSH_INTERVAL: u32 = 100;
 
     while !stop.load(Ordering::Relaxed) && Instant::now() < deadline {
         let started = Instant::now();
@@ -214,9 +218,7 @@ async fn worker_loop(
         match resp {
             Ok(r) => {
                 let status = r.status();
-                if let Ok(mut map) = counters.status_codes.lock() {
-                    *map.entry(status.as_u16()).or_insert(0) += 1;
-                }
+                *local_status.entry(status.as_u16()).or_insert(0) += 1;
                 let _ = r.bytes().await;
                 let latency_us = started.elapsed().as_micros() as u64;
                 let _ = hist.record(latency_us.max(1));
@@ -227,11 +229,10 @@ async fn worker_loop(
                 }
             }
             Err(e) => {
-                let msg = e.to_string();
                 counters.transport_error.fetch_add(1, Ordering::Relaxed);
                 let latency_us = started.elapsed().as_micros() as u64;
                 let _ = hist.record(latency_us.max(1));
-                if msg.contains("timed out") {
+                if e.is_timeout() {
                     counters.timeout.fetch_add(1, Ordering::Relaxed);
                 } else {
                     counters.failed.fetch_add(1, Ordering::Relaxed);
@@ -239,29 +240,42 @@ async fn worker_loop(
             }
         }
 
+        batch_count += 1;
+        if batch_count >= FLUSH_INTERVAL {
+            flush_local_status(&counters, &mut local_status);
+            batch_count = 0;
+        }
+
         if !interval.is_zero() {
             tokio::time::sleep(interval).await;
         }
     }
+
+    // Flush remaining local counts
+    flush_local_status(&counters, &mut local_status);
 
     Ok(WorkerResult {
         histogram: Some(hist),
     })
 }
 
+fn flush_local_status(counters: &SharedCounters, local: &mut HashMap<u16, u64>) {
+    if local.is_empty() {
+        return;
+    }
+    if let Ok(mut map) = counters.status_codes.lock() {
+        for (code, count) in local.drain() {
+            *map.entry(code).or_insert(0) += count;
+        }
+    }
+}
+
 fn build_request(client: &Client, template: &RequestTemplate) -> reqwest::RequestBuilder {
-    let mut rb = client.request(template.method.clone(), &template.url);
-    rb = set_headers(rb, &template.headers);
+    let mut rb = client
+        .request(template.method.clone(), &template.url)
+        .headers(template.headers.clone());
     if let Some(body) = &template.body {
         rb = rb.body(body.clone());
     }
     rb
-}
-
-fn set_headers(rb: reqwest::RequestBuilder, headers: &HeaderMap) -> reqwest::RequestBuilder {
-    let mut out = rb;
-    for (k, v) in headers {
-        out = out.header(k, v);
-    }
-    out
 }
