@@ -1,3 +1,4 @@
+use crate::i18n::{I18nKey, Language, t};
 use anyhow::{Context, Result, anyhow};
 use bytes::Bytes;
 use reqwest::Method;
@@ -13,10 +14,10 @@ pub struct RequestTemplate {
     pub body: Option<Bytes>,
 }
 
-pub fn parse_curl(input: &str) -> Result<RequestTemplate> {
-    let parts = shlex::split(input).ok_or_else(|| anyhow!("无效的 shell 字符串"))?;
+pub fn parse_curl(input: &str, language: Language) -> Result<RequestTemplate> {
+    let parts = shlex::split(input).ok_or_else(|| anyhow!(t(language, I18nKey::InvalidShellString)))?;
     if parts.is_empty() {
-        return Err(anyhow!("输入为空"));
+        return Err(anyhow!(t(language, I18nKey::EmptyInput)));
     }
 
     let mut method = Method::GET;
@@ -33,23 +34,28 @@ pub fn parse_curl(input: &str) -> Result<RequestTemplate> {
                 idx += 1;
                 let m = parts
                     .get(idx)
-                    .ok_or_else(|| anyhow!("缺少 HTTP Method"))?;
-                method = Method::from_str(&m.to_uppercase()).context("无效 Method")?;
+                    .ok_or_else(|| anyhow!(t(language, I18nKey::MissingHttpMethod)))?;
+                method = Method::from_str(&m.to_uppercase())
+                    .with_context(|| t(language, I18nKey::InvalidHttpMethod))?;
             }
             "-H" | "--header" => {
                 idx += 1;
-                let hv = parts.get(idx).ok_or_else(|| anyhow!("缺少 Header 值"))?;
+                let hv = parts
+                    .get(idx)
+                    .ok_or_else(|| anyhow!(t(language, I18nKey::MissingHeaderValue)))?;
                 if let Some((k, v)) = hv.split_once(':') {
-                    let key = HeaderName::from_str(k.trim()).context("Header 名非法")?;
-                    let val = HeaderValue::from_str(v.trim()).context("Header 值非法")?;
+                    let key = HeaderName::from_str(k.trim())
+                        .with_context(|| t(language, I18nKey::InvalidHeaderName))?;
+                    let val = HeaderValue::from_str(v.trim())
+                        .with_context(|| t(language, I18nKey::InvalidHeaderValue))?;
                     headers.insert(key, val);
                 } else {
-                    return Err(anyhow!("Header 格式必须是 Key: Value"));
+                    return Err(anyhow!(t(language, I18nKey::HeaderFormatInvalid)));
                 }
             }
             "-d" | "--data" | "--data-raw" | "--data-binary" => {
                 idx += 1;
-                let b = parts.get(idx).ok_or_else(|| anyhow!("缺少 Body"))?;
+                let b = parts.get(idx).ok_or_else(|| anyhow!(t(language, I18nKey::MissingBody)))?;
                 body = Some(Bytes::from(b.as_bytes().to_vec()));
                 if method == Method::GET {
                     method = Method::POST;
@@ -63,8 +69,8 @@ pub fn parse_curl(input: &str) -> Result<RequestTemplate> {
         idx += 1;
     }
 
-    let target = url.ok_or_else(|| anyhow!("未找到 URL"))?;
-    let parsed = Url::parse(&target).context("URL 非法")?;
+    let target = url.ok_or_else(|| anyhow!(t(language, I18nKey::UrlNotFound)))?;
+    let parsed = Url::parse(&target).with_context(|| t(language, I18nKey::InvalidUrl))?;
     if !headers.contains_key(HOST) {
         if let Some(host) = parsed.host_str() {
             let h = if let Some(port) = parsed.port() {

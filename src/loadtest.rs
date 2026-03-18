@@ -1,10 +1,9 @@
 use crate::curl_parser::RequestTemplate;
+use crate::i18n::{I18nKey, Language, t};
 use anyhow::{Result, anyhow};
 use hdrhistogram::Histogram;
 use reqwest::Client;
-use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc::UnboundedSender;
@@ -53,14 +52,26 @@ pub enum EngineEvent {
     Failed(String),
 }
 
-#[derive(Default)]
 struct SharedCounters {
     total: AtomicU64,
     success: AtomicU64,
     failed: AtomicU64,
     timeout: AtomicU64,
-    status_codes: Mutex<HashMap<u16, u64>>,
+    status_codes: [AtomicU64; 600],
     transport_error: AtomicU64,
+}
+
+impl Default for SharedCounters {
+    fn default() -> Self {
+        Self {
+            total: AtomicU64::new(0),
+            success: AtomicU64::new(0),
+            failed: AtomicU64::new(0),
+            timeout: AtomicU64::new(0),
+            status_codes: std::array::from_fn(|_| AtomicU64::new(0)),
+            transport_error: AtomicU64::new(0),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -71,14 +82,15 @@ struct WorkerResult {
 pub async fn run_load_test(
     template: RequestTemplate,
     settings: LoadTestSettings,
+    language: Language,
     events: UnboundedSender<EngineEvent>,
     stop: Arc<AtomicBool>,
 ) -> Result<()> {
     if settings.concurrency == 0 {
-        return Err(anyhow!("并发数必须大于 0"));
+        return Err(anyhow!(t(language, I18nKey::ConcurrencyMustGtZero)));
     }
     if settings.duration_secs == 0 {
-        return Err(anyhow!("持续时间必须大于 0"));
+        return Err(anyhow!(t(language, I18nKey::DurationMustGtZero)));
     }
 
     let begin = Instant::now();
@@ -98,13 +110,19 @@ pub async fn run_load_test(
             let failed = report_counters.failed.load(Ordering::Relaxed);
             let timeout = report_counters.timeout.load(Ordering::Relaxed);
             let transport_error = report_counters.transport_error.load(Ordering::Relaxed);
-            let mut status_code_counts: Vec<(u16, u64)> = report_counters
+            let status_code_counts: Vec<(u16, u64)> = report_counters
                 .status_codes
-                .lock()
-                .ok()
-                .map(|map| map.iter().map(|(code, count)| (*code, *count)).collect())
-                .unwrap_or_default();
-            status_code_counts.sort_by_key(|(code, _)| *code);
+                .iter()
+                .enumerate()
+                .filter_map(|(code, count)| {
+                    let value = count.load(Ordering::Relaxed);
+                    if value > 0 {
+                        Some((code as u16, value))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
             let _ = progress_tx.send(EngineEvent::Progress(RuntimeMetrics {
                 elapsed_secs: elapsed,
                 total_requests: total,
@@ -205,24 +223,32 @@ async fn worker_loop(
     counters: Arc<SharedCounters>,
 ) -> Result<WorkerResult> {
     let mut hist = Histogram::<u64>::new(3)?;
-    let mut local_status: HashMap<u16, u64> = HashMap::new();
+    let mut local_status = [0_u64; 600];
     let mut batch_count: u32 = 0;
     const FLUSH_INTERVAL: u32 = 100;
+    let base_request = build_request(client.as_ref(), &template);
 
     while !stop.load(Ordering::Relaxed) && Instant::now() < deadline {
         let started = Instant::now();
-        let req = build_request(client.as_ref(), &template);
+        let req = base_request
+            .try_clone()
+            .unwrap_or_else(|| build_request(client.as_ref(), &template));
         let resp = req.send().await;
         counters.total.fetch_add(1, Ordering::Relaxed);
 
         match resp {
             Ok(r) => {
                 let status = r.status();
-                *local_status.entry(status.as_u16()).or_insert(0) += 1;
-                let _ = r.bytes().await;
+                if let Some(code_slot) = status_code_slot(status.as_u16()) {
+                    local_status[code_slot] += 1;
+                }
+                let body_ok = r.bytes().await.is_ok();
                 let latency_us = started.elapsed().as_micros() as u64;
                 let _ = hist.record(latency_us.max(1));
-                if status.is_success() {
+                if !body_ok {
+                    counters.transport_error.fetch_add(1, Ordering::Relaxed);
+                    counters.failed.fetch_add(1, Ordering::Relaxed);
+                } else if status.is_success() {
                     counters.success.fetch_add(1, Ordering::Relaxed);
                 } else {
                     counters.failed.fetch_add(1, Ordering::Relaxed);
@@ -259,14 +285,20 @@ async fn worker_loop(
     })
 }
 
-fn flush_local_status(counters: &SharedCounters, local: &mut HashMap<u16, u64>) {
-    if local.is_empty() {
-        return;
-    }
-    if let Ok(mut map) = counters.status_codes.lock() {
-        for (code, count) in local.drain() {
-            *map.entry(code).or_insert(0) += count;
+fn flush_local_status(counters: &SharedCounters, local: &mut [u64; 600]) {
+    for (code, count) in local.iter_mut().enumerate() {
+        if *count > 0 {
+            counters.status_codes[code].fetch_add(*count, Ordering::Relaxed);
+            *count = 0;
         }
+    }
+}
+
+fn status_code_slot(code: u16) -> Option<usize> {
+    if code <= 599 {
+        Some(code as usize)
+    } else {
+        None
     }
 }
 

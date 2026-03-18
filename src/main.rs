@@ -6,17 +6,19 @@ mod i18n;
 mod loadtest;
 
 use eframe::egui;
+use i18n::{I18nKey, Language, t};
 
 fn main() -> Result<(), eframe::Error> {
+    let title = t(Language::ZhCn, I18nKey::AppTitle);
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1440.0, 700.0])
-            .with_title("API QPS 压测工具"),
+            .with_title(title),
         ..Default::default()
     };
 
     eframe::run_native(
-        "API QPS 压测工具",
+        title,
         options,
         Box::new(|cc| Ok(Box::new(app::ApiQpsApp::new(cc)))),
     )

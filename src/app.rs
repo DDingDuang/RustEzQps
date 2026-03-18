@@ -21,7 +21,7 @@ pub struct ApiQpsApp {
     convert_status: Option<ConvertStatus>,
     generic_error: Option<String>,
     settings: LoadTestSettings,
-    runtime: Arc<Runtime>,
+    runtime: Option<Arc<Runtime>>,
     run_state: RunState,
     latest_runtime_metrics: RuntimeMetrics,
     final_metrics: Option<FinalMetrics>,
@@ -99,8 +99,20 @@ impl ApiQpsApp {
             style.spacing.button_padding = egui::vec2(12.0, 6.0);
         });
 
+        let default_lang = Language::ZhCn;
+        let (runtime, runtime_error) = match Runtime::new() {
+            Ok(rt) => (Some(Arc::new(rt)), None),
+            Err(e) => (
+                None,
+                Some(format!(
+                    "{}: {e}",
+                    t(default_lang, I18nKey::RuntimeInitFailed)
+                )),
+            ),
+        };
+
         let mut app = Self {
-            language: Language::ZhCn,
+            language: default_lang,
             curl_input: "curl -X POST -H 'Content-Type: application/json' -d '{\"key\":\"value\"}' https://api.example.com/endpoint".to_owned(),
             request_draft: EditableRequest {
                 api_url: String::new(),
@@ -109,7 +121,7 @@ impl ApiQpsApp {
                 body: String::new(),
             },
             convert_status: None,
-            generic_error: None,
+            generic_error: runtime_error,
             settings: LoadTestSettings {
                 concurrency: 100,
                 duration_secs: 60,
@@ -117,7 +129,7 @@ impl ApiQpsApp {
                 timeout_secs: 5,
                 keep_alive: true,
             },
-            runtime: Arc::new(Runtime::new().expect("failed to create runtime")),
+            runtime,
             run_state: RunState::Idle,
             latest_runtime_metrics: RuntimeMetrics::default(),
             final_metrics: None,
@@ -137,15 +149,23 @@ impl ApiQpsApp {
         };
 
         let settings = self.settings.clone();
+        let language = self.language;
         let stop_flag = Arc::new(AtomicBool::new(false));
         let stop_for_task = stop_flag.clone();
         let (tx, rx) = unbounded_channel();
         self.final_metrics = None;
         self.latest_runtime_metrics = RuntimeMetrics::default();
 
-        let runtime = self.runtime.clone();
+        let Some(runtime) = self.runtime.clone() else {
+            self.generic_error = Some(format!(
+                "{}: {}",
+                t(self.language, I18nKey::GenericError),
+                t(self.language, I18nKey::RuntimeUnavailable)
+            ));
+            return;
+        };
         runtime.spawn(async move {
-            if let Err(err) = run_load_test(template, settings, tx.clone(), stop_for_task).await {
+            if let Err(err) = run_load_test(template, settings, language, tx.clone(), stop_for_task).await {
                 let _ = tx.send(EngineEvent::Failed(err.to_string()));
             }
         });
@@ -164,8 +184,14 @@ impl ApiQpsApp {
 
     fn consume_events(&mut self) {
         let mut should_idle = false;
+        let mut processed = 0usize;
+        const MAX_EVENTS_PER_FRAME: usize = 512;
         if let RunState::Running { events, .. } = &mut self.run_state {
-            while let Ok(ev) = events.try_recv() {
+            while processed < MAX_EVENTS_PER_FRAME {
+                let Ok(ev) = events.try_recv() else {
+                    break;
+                };
+                processed += 1;
                 match ev {
                     EngineEvent::Progress(m) => {
                         self.latest_runtime_metrics = m;
@@ -192,7 +218,7 @@ impl ApiQpsApp {
     }
 
     fn auto_convert_from_curl(&mut self) {
-        match parse_curl(&self.curl_input) {
+        match parse_curl(&self.curl_input, self.language) {
             Ok(template) => {
                 self.request_draft = Self::draft_from_template(template);
                 self.convert_status = Some(ConvertStatus {
@@ -231,34 +257,35 @@ impl ApiQpsApp {
     }
 
     fn build_template_from_draft(&self) -> Result<RequestTemplate> {
-        let method =
-            Method::from_str(self.request_draft.method.trim()).map_err(|_| anyhow!("请求类型无效"))?;
+        let method = Method::from_str(self.request_draft.method.trim())
+            .map_err(|_| anyhow!(t(self.language, I18nKey::InvalidRequestMethod)))?;
         let url = self.request_draft.api_url.trim().to_owned();
         if url.is_empty() {
-            return Err(anyhow!("API URL 不能为空"));
+            return Err(anyhow!(t(self.language, I18nKey::EmptyApiUrl)));
         }
-        let _ = url::Url::parse(&url).map_err(|_| anyhow!("API URL 非法"))?;
+        let _ = url::Url::parse(&url).map_err(|_| anyhow!(t(self.language, I18nKey::InvalidApiUrl)))?;
 
         let headers_text = self.request_draft.headers_json.trim();
         let value: Value = if headers_text.is_empty() {
             Value::Object(Map::new())
         } else {
-            serde_json::from_str(headers_text).map_err(|_| anyhow!("Header 不是合法 JSON"))?
+            serde_json::from_str(headers_text).map_err(|_| anyhow!(t(self.language, I18nKey::HeaderNotJson)))?
         };
         let obj = value
             .as_object()
-            .ok_or_else(|| anyhow!("Header JSON 必须是对象类型"))?;
+            .ok_or_else(|| anyhow!(t(self.language, I18nKey::HeaderMustObject)))?;
 
         let mut headers = HeaderMap::new();
         for (k, v) in obj {
-            let name = HeaderName::from_str(k).map_err(|_| anyhow!("Header 名非法: {k}"))?;
+            let name = HeaderName::from_str(k)
+                .map_err(|_| anyhow!("{}: {k}", t(self.language, I18nKey::InvalidHeaderName)))?;
             let val_str = if let Some(s) = v.as_str() {
                 s.to_owned()
             } else {
                 v.to_string()
             };
-            let header_val =
-                HeaderValue::from_str(&val_str).map_err(|_| anyhow!("Header 值非法: {k}"))?;
+            let header_val = HeaderValue::from_str(&val_str)
+                .map_err(|_| anyhow!("{}: {k}", t(self.language, I18nKey::InvalidHeaderValue)))?;
             headers.insert(name, header_val);
         }
 
@@ -280,6 +307,10 @@ impl ApiQpsApp {
 
     fn method_supports_body(method: &Method) -> bool {
         !matches!(*method, Method::GET | Method::HEAD)
+    }
+
+    fn method_text_supports_body(method: &str) -> bool {
+        !(method.eq_ignore_ascii_case("GET") || method.eq_ignore_ascii_case("HEAD"))
     }
 
     fn normalize_possible_json_body(input: &str) -> String {
@@ -326,7 +357,7 @@ impl eframe::App for ApiQpsApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.consume_events();
         if self.is_running() {
-            ctx.request_repaint_after(std::time::Duration::from_millis(60));
+            ctx.request_repaint_after(std::time::Duration::from_millis(33));
         }
 
         egui::TopBottomPanel::top("top_bar")
@@ -344,22 +375,30 @@ impl eframe::App for ApiQpsApp {
             .exact_height(64.0)
             .show(ctx, |ui| {
                 ui.horizontal_centered(|ui| {
-                    ui.label(RichText::new("API QPS DevTools").size(18.0).strong().color(Color32::from_rgb(29, 29, 31)));
+                    ui.label(RichText::new(t(self.language, I18nKey::AppTitle)).size(18.0).strong().color(Color32::from_rgb(29, 29, 31)));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let zh_label = t(self.language, I18nKey::LanguageZh);
+                        let en_label = t(self.language, I18nKey::LanguageEn);
                          egui::ComboBox::from_id_salt("lang_combo")
                             .selected_text(match self.language {
-                                Language::ZhCn => "中文",
-                                Language::EnUs => "English",
+                                Language::ZhCn => zh_label,
+                                Language::EnUs => en_label,
                             })
                             .show_ui(ui, |ui| {
-                                ui.selectable_value(&mut self.language, Language::ZhCn, "中文");
-                                ui.selectable_value(&mut self.language, Language::EnUs, "English");
+                                ui.selectable_value(&mut self.language, Language::ZhCn, zh_label);
+                                ui.selectable_value(&mut self.language, Language::EnUs, en_label);
                             });
                         
                         ui.add_space(16.0);
                         
                         // Styled Reset Button
-                        if ui.add(egui::Button::new("↺ 重置").min_size(egui::vec2(60.0, 28.0))).clicked() {
+                        if ui
+                            .add(
+                                egui::Button::new(t(self.language, I18nKey::Reset))
+                                    .min_size(egui::vec2(60.0, 28.0)),
+                            )
+                            .clicked()
+                        {
                             self.reset_state();
                         }
 
@@ -369,9 +408,9 @@ impl eframe::App for ApiQpsApp {
                             "{}: {}",
                             t(self.language, I18nKey::Target),
                             if self.request_draft.api_url.is_empty() {
-                                "http://127.0.0.1/api".to_owned()
+                                "http://127.0.0.1/api"
                             } else {
-                                self.request_draft.api_url.clone()
+                                self.request_draft.api_url.as_str()
                             }
                         )).color(Color32::from_rgb(142, 142, 147)));
                     });
@@ -457,8 +496,7 @@ impl eframe::App for ApiQpsApp {
                                         });
                                         cols[1].vertical(|ui| {
                                             ui.label(t(self.language, I18nKey::RequestBody));
-                                            let method = Method::from_str(self.request_draft.method.trim()).unwrap_or(Method::GET);
-                                            let supports_body = Self::method_supports_body(&method);
+                                            let supports_body = Self::method_text_supports_body(self.request_draft.method.trim());
                                             ui.add_enabled_ui(supports_body, |ui| {
                                                 egui::ScrollArea::vertical().max_height(150.0).show(ui, |ui| {
                                                     ui.add_sized(
@@ -523,17 +561,17 @@ impl eframe::App for ApiQpsApp {
                                         ui.horizontal(|ui| {
                                             ui.label(t(self.language, I18nKey::Duration));
                                             ui.add(egui::DragValue::new(&mut self.settings.duration_secs).range(1..=86400));
-                                            ui.label("s");
+                                            ui.label(t(self.language, I18nKey::SecondUnit));
                                         });
                                         ui.horizontal(|ui| {
                                             ui.label(t(self.language, I18nKey::Timeout));
                                             ui.add(egui::DragValue::new(&mut self.settings.timeout_secs).range(1..=120));
-                                            ui.label("s");
+                                            ui.label(t(self.language, I18nKey::SecondUnit));
                                         });
                                         ui.horizontal(|ui| {
                                             ui.label(t(self.language, I18nKey::Interval));
                                             ui.add(egui::DragValue::new(&mut self.settings.interval_ms).range(0..=60000));
-                                            ui.label("ms");
+                                            ui.label(t(self.language, I18nKey::MillisecondUnit));
                                         });
                                         ui.end_row();
                                     });
@@ -716,15 +754,13 @@ fn render_status_code_bars(
         return;
     }
 
-    let mut status_data = status_counts.to_vec();
-    status_data.sort_by_key(|(code, _)| *code);
-    let mut bars: Vec<(String, u64, Color32)> = status_data
-        .iter()
-        .map(|(code, count)| (format!("{code}"), *count, status_color(*code)))
-        .collect();
+    let mut bars: Vec<(StatusCodeLabel, u64, Color32)> = Vec::with_capacity(status_counts.len() + 1);
+    for (code, count) in status_counts {
+        bars.push((StatusCodeLabel::Code(*code), *count, status_color(*code)));
+    }
     if transport_error_requests > 0 {
         bars.push((
-            "ERR".to_owned(),
+            StatusCodeLabel::Err,
             transport_error_requests,
             Color32::from_rgb(255, 59, 48),
         ));
@@ -733,7 +769,7 @@ fn render_status_code_bars(
     let max_count = bars.iter().map(|(_, count, _)| *count).max().unwrap_or(1).max(1);
     let max_axis = ((max_count as f64) * 1.2).ceil().max(1.0) as u64;
 
-    let grid_steps = 4;
+    let grid_steps = 3;
     for i in 0..=grid_steps {
         let t = i as f32 / grid_steps as f32;
         let y = chart_rect.bottom() - t * chart_rect.height();
@@ -767,8 +803,10 @@ fn render_status_code_bars(
     let max_x_labels = ((chart_rect.width() / 34.0).floor() as usize).max(1);
     let label_step = bars.len().div_ceil(max_x_labels).max(1);
 
-    let mut hovered: Option<(egui::Pos2, String, u64, Color32)> = None;
+    let mut hovered: Option<(egui::Pos2, StatusCodeLabel, u64, Color32)> = None;
 
+    let hover_pos = response.hover_pos();
+    let show_bar_value = bars.len() <= 24;
     for (idx, (label, count, color)) in bars.iter().enumerate() {
         let center_x = chart_rect.left() + slot_w * (idx as f32 + 0.5);
         let left = center_x - bar_w * 0.5;
@@ -789,12 +827,12 @@ fn render_status_code_bars(
             painter.text(
                 egui::pos2(center_x, chart_rect.bottom() + 6.0),
                 egui::Align2::CENTER_TOP,
-                label,
+                label.display_text(language),
                 font_id.clone(),
                 text_color,
             );
         }
-        if bar_rect.height() >= 14.0 && bar_w >= 10.0 {
+        if show_bar_value && bar_rect.height() >= 14.0 && bar_w >= 10.0 {
             painter.text(
                 bar_rect.center(),
                 egui::Align2::CENTER_CENTER,
@@ -804,16 +842,16 @@ fn render_status_code_bars(
             );
         }
 
-        if let Some(pos) = response.hover_pos() {
+        if let Some(pos) = hover_pos {
             if bar_rect.contains(pos) {
-                hovered = Some((egui::pos2(center_x, top), label.clone(), *count, *color));
+                hovered = Some((egui::pos2(center_x, top), *label, *count, *color));
             }
         }
     }
 
     if let Some((anchor, label, count, color)) = hovered {
         painter.circle_filled(anchor, 4.0, color);
-        let tooltip_text = format!("{label}: {count}");
+        let tooltip_text = format!("{}: {count}", label.display_text(language));
         let galley = painter.layout_no_wrap(
             tooltip_text,
             FontId::new(13.0, FontFamily::Proportional),
@@ -838,6 +876,21 @@ fn render_status_code_bars(
             Color32::from_rgb(29, 29, 31),
         );
         painter.galley(tooltip_rect.min + padding, galley, Color32::WHITE);
+    }
+}
+
+#[derive(Clone, Copy)]
+enum StatusCodeLabel {
+    Code(u16),
+    Err,
+}
+
+impl StatusCodeLabel {
+    fn display_text(&self, language: Language) -> String {
+        match self {
+            Self::Code(code) => code.to_string(),
+            Self::Err => t(language, I18nKey::TransportErrShort).to_owned(),
+        }
     }
 }
 
