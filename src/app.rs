@@ -667,9 +667,11 @@ impl ApiQpsApp {
             if response.changed() {
                 self.auto_convert_from_curl();
             }
+            if response.double_clicked() && !self.curl_input.trim().is_empty() {
+                self.expanded_editor = Some(ExpandedEditor::Curl);
+            }
 
             ui.add_space(10.0);
-            let supports_body = Self::method_text_supports_body(self.request_draft.method.trim());
             ui.horizontal(|ui| {
                 ui.label(
                     RichText::new(t(self.language, I18nKey::HeaderJson))
@@ -695,7 +697,13 @@ impl ApiQpsApp {
                     }
                 });
             });
-            render_fixed_code_input(ui, &mut self.request_draft.headers_json, 112.0, None);
+            let header_response =
+                render_fixed_code_input(ui, &mut self.request_draft.headers_json, 112.0, None);
+            if header_response.double_clicked()
+                && !self.request_draft.headers_json.trim().is_empty()
+            {
+                self.expanded_editor = Some(ExpandedEditor::Headers);
+            }
 
             ui.add_space(8.0);
             ui.horizontal(|ui| {
@@ -707,8 +715,7 @@ impl ApiQpsApp {
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui
-                        .add_enabled(
-                            supports_body,
+                        .add(
                             egui::Button::new(
                                 RichText::new(t(self.language, I18nKey::ExpandEditor))
                                     .size(11.5)
@@ -724,23 +731,10 @@ impl ApiQpsApp {
                     }
                 });
             });
-            ui.add_enabled_ui(supports_body, |ui| {
-                render_resizable_code_editor(
-                    ui,
-                    "request_body_resize",
-                    &mut self.request_draft.body,
-                    130.0,
-                    112.0,
-                    220.0,
-                    None,
-                );
-            });
-            if !supports_body {
-                ui.label(
-                    RichText::new(t(self.language, I18nKey::BodyNotRequired))
-                        .size(11.5)
-                        .color(theme_muted()),
-                );
+            let body_response =
+                render_fixed_code_input(ui, &mut self.request_draft.body, 130.0, None);
+            if body_response.double_clicked() && !self.request_draft.body.trim().is_empty() {
+                self.expanded_editor = Some(ExpandedEditor::Body);
             }
         });
     }
@@ -1029,12 +1023,7 @@ impl ApiQpsApp {
         });
     }
 
-    fn render_final_report_drawer(
-        &mut self,
-        ui: &mut egui::Ui,
-        final_metrics: &FinalMetrics,
-        height: f32,
-    ) {
+    fn render_final_report_drawer(&mut self, ui: &mut egui::Ui, final_metrics: &FinalMetrics) {
         let is_open = self.final_report_drawer_open;
         let close_label = ">";
         let open_label = "<";
@@ -1056,8 +1045,6 @@ impl ApiQpsApp {
             })
             .inner_margin(egui::Margin::same(12))
             .show(ui, |ui| {
-                ui.set_min_height((height - 12.0).max(220.0));
-
                 if is_open {
                     ui.horizontal(|ui| {
                         ui.label(
@@ -1081,49 +1068,50 @@ impl ApiQpsApp {
                         });
                     });
                     ui.separator();
-                    egui::ScrollArea::vertical()
-                        .auto_shrink([false, false])
-                        .show(ui, |ui| {
-                            render_report_field(
-                                ui,
-                                t(self.language, I18nKey::ElapsedTime),
-                                format!("{:.2}s", final_metrics.elapsed_secs),
-                            );
-                            render_report_field(
-                                ui,
-                                t(self.language, I18nKey::TotalRequestsFinal),
-                                format!("{}", final_metrics.total_requests),
-                            );
-                            render_report_field(
-                                ui,
-                                t(self.language, I18nKey::SuccessFailTimeout),
-                                format!(
-                                    "{} / {} / {}",
-                                    final_metrics.success_requests,
-                                    final_metrics.failed_requests,
-                                    final_metrics.timeout_requests
-                                ),
-                            );
-                            render_report_field(
-                                ui,
-                                t(self.language, I18nKey::AvgQps),
-                                format!("{:.1}", final_metrics.qps),
-                            );
-                            render_report_field(
-                                ui,
-                                t(self.language, I18nKey::LatencyDetail),
-                                format!(
-                                    "{:.2} / {:.2} / {:.2} / {:.2} / {:.2} ms",
-                                    final_metrics.avg_latency_ms,
-                                    final_metrics.p50_latency_ms,
-                                    final_metrics.p95_latency_ms,
-                                    final_metrics.p99_latency_ms,
-                                    final_metrics.max_latency_ms
-                                ),
-                            );
-                        });
+                    render_report_field(
+                        ui,
+                        t(self.language, I18nKey::ElapsedTime),
+                        format!("{:.2}s", final_metrics.elapsed_secs),
+                    );
+                    render_report_field(
+                        ui,
+                        t(self.language, I18nKey::TotalRequestsFinal),
+                        format!("{}", final_metrics.total_requests),
+                    );
+                    render_report_field(
+                        ui,
+                        t(self.language, I18nKey::SuccessFailTimeout),
+                        format!(
+                            "{} / {} / {}",
+                            final_metrics.success_requests,
+                            final_metrics.failed_requests,
+                            final_metrics.timeout_requests
+                        ),
+                    );
+                    render_report_field(
+                        ui,
+                        t(self.language, I18nKey::AvgQps),
+                        format!("{:.1}", final_metrics.qps),
+                    );
+                    render_report_field(
+                        ui,
+                        t(self.language, I18nKey::HttpStatusCodes),
+                        format_status_code_counts(&final_metrics.status_code_counts),
+                    );
+                    render_report_field(
+                        ui,
+                        t(self.language, I18nKey::LatencyDetail),
+                        format!(
+                            "{:.2} / {:.2} / {:.2} / {:.2} / {:.2} ms",
+                            final_metrics.avg_latency_ms,
+                            final_metrics.p50_latency_ms,
+                            final_metrics.p95_latency_ms,
+                            final_metrics.p99_latency_ms,
+                            final_metrics.max_latency_ms
+                        ),
+                    );
                 } else {
-                    ui.vertical_centered(|ui| {
+                    ui.vertical(|ui| {
                         ui.add_space(2.0);
                         if ui
                             .add(
@@ -1208,11 +1196,7 @@ impl ApiQpsApp {
                                     egui::vec2(drawer_width, content_height),
                                     egui::Layout::top_down(egui::Align::Min),
                                     |ui| {
-                                        self.render_final_report_drawer(
-                                            ui,
-                                            &final_metrics,
-                                            content_height,
-                                        );
+                                        self.render_final_report_drawer(ui, &final_metrics);
                                     },
                                 );
                             }
@@ -1891,6 +1875,18 @@ fn render_report_field(ui: &mut egui::Ui, label: &str, value: String) {
     ui.add_space(8.0);
 }
 
+fn format_status_code_counts(status_code_counts: &[(u16, u64)]) -> String {
+    if status_code_counts.is_empty() {
+        return "-".to_owned();
+    }
+
+    status_code_counts
+        .iter()
+        .map(|(code, count)| format!("{code}: {count}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn render_summary_strip_metric(ui: &mut egui::Ui, label: &str, value: String, accent: Color32) {
     capsule_frame(accent.linear_multiply(0.08), accent.linear_multiply(0.22)).show(ui, |ui| {
         ui.horizontal(|ui| {
@@ -1998,119 +1994,6 @@ fn render_fixed_code_input(
         .inner;
 
     edit_response | outer_response
-}
-
-fn render_resizable_code_editor(
-    ui: &mut egui::Ui,
-    id_salt: impl std::hash::Hash,
-    text: &mut String,
-    default_height: f32,
-    min_height: f32,
-    max_height: f32,
-    hint_text: Option<&str>,
-) -> egui::Response {
-    let editor_id = ui.make_persistent_id(id_salt);
-    let handle_id = editor_id.with("__resize_handle");
-    let drag_start_id = editor_id.with("__resize_start_height");
-    let width = ui.available_width();
-    let mut height = ui
-        .ctx()
-        .data_mut(|d| d.get_persisted::<f32>(editor_id))
-        .unwrap_or(default_height)
-        .clamp(min_height, max_height);
-
-    let outer_size = egui::vec2(width, height);
-    let (outer_rect, outer_response) = ui.allocate_exact_size(outer_size, Sense::hover());
-    let handle_size = egui::Vec2::splat(ui.visuals().resize_corner_size.max(16.0));
-    let handle_rect = egui::Rect::from_min_size(
-        egui::pos2(
-            outer_rect.right() - handle_size.x,
-            outer_rect.bottom() - handle_size.y,
-        ),
-        handle_size,
-    );
-    let handle_response = ui.interact(handle_rect, handle_id, Sense::drag());
-
-    if handle_response.drag_started() {
-        ui.ctx()
-            .data_mut(|d| d.insert_temp::<f32>(drag_start_id, height));
-    }
-
-    if handle_response.dragged() {
-        let start_height = ui
-            .ctx()
-            .data(|d| d.get_temp::<f32>(drag_start_id))
-            .unwrap_or(height);
-        height = (start_height + handle_response.drag_delta().y).clamp(min_height, max_height);
-        ui.ctx()
-            .data_mut(|d| d.insert_persisted::<f32>(editor_id, height));
-        ui.ctx().request_repaint();
-    }
-
-    if handle_response.drag_stopped() {
-        ui.ctx().data_mut(|d| d.remove::<f32>(drag_start_id));
-    }
-
-    ui.painter().rect_filled(
-        outer_rect,
-        egui::CornerRadius::same(12),
-        theme_surface_soft(),
-    );
-    ui.painter().rect_stroke(
-        outer_rect,
-        egui::CornerRadius::same(12),
-        Stroke::new(1.0, theme_line()),
-        egui::StrokeKind::Outside,
-    );
-
-    let content_rect = outer_rect.shrink2(egui::vec2(8.0, 8.0));
-    let mut content_ui = ui.new_child(
-        egui::UiBuilder::new()
-            .max_rect(content_rect)
-            .layout(egui::Layout::top_down(egui::Align::Min)),
-    );
-
-    let mut edit = TextEdit::multiline(text)
-        .frame(false)
-        .font(FontId::new(13.0, FontFamily::Monospace))
-        .code_editor()
-        .desired_width(f32::INFINITY)
-        .desired_rows(((default_height - 16.0) / 18.0).round().max(3.0) as usize);
-    if let Some(hint_text) = hint_text {
-        edit = edit.hint_text(hint_text);
-    }
-
-    let edit_response = egui::ScrollArea::vertical()
-        .auto_shrink([false, false])
-        .max_height(content_rect.height())
-        .show(&mut content_ui, |ui| {
-            ui.set_min_width(content_rect.width());
-            ui.add(edit)
-        })
-        .inner;
-
-    let handle_color = if handle_response.hovered() || handle_response.dragged() {
-        theme_primary()
-    } else {
-        theme_muted()
-    };
-    let painter = ui.painter();
-    let bottom_right = handle_rect.right_bottom() - egui::vec2(3.0, 3.0);
-    for offset in [2.0_f32, 6.0, 10.0] {
-        painter.line_segment(
-            [
-                egui::pos2(bottom_right.x - offset, bottom_right.y),
-                egui::pos2(bottom_right.x, bottom_right.y - offset),
-            ],
-            Stroke::new(1.0, handle_color),
-        );
-    }
-
-    if handle_response.hovered() || handle_response.dragged() {
-        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeNwSe);
-    }
-
-    edit_response | handle_response | outer_response
 }
 
 fn render_metric_card(ui: &mut egui::Ui, label: &str, value: String) {

@@ -51,6 +51,7 @@ pub struct FinalMetrics {
     pub p95_latency_ms: f64,
     pub p99_latency_ms: f64,
     pub max_latency_ms: f64,
+    pub status_code_counts: Vec<(u16, u64)>,
 }
 
 #[derive(Clone, Debug)]
@@ -297,6 +298,19 @@ fn build_final_metrics(
     let timeout_count = counters.timeout.load(Ordering::Relaxed);
     let (avg_latency_ms, p50_latency_ms, p95_latency_ms, p99_latency_ms, max_latency_ms) =
         summarize_latency(latency_hist);
+    let status_code_counts: Vec<(u16, u64)> = counters
+        .status_codes
+        .iter()
+        .enumerate()
+        .filter_map(|(code, count)| {
+            let value = count.load(Ordering::Relaxed);
+            if value > 0 {
+                Some((code as u16, value))
+            } else {
+                None
+            }
+        })
+        .collect();
 
     FinalMetrics {
         elapsed_secs: elapsed,
@@ -310,6 +324,7 @@ fn build_final_metrics(
         p95_latency_ms,
         p99_latency_ms,
         max_latency_ms,
+        status_code_counts,
     }
 }
 
@@ -397,6 +412,7 @@ mod tests {
         assert_eq!(metrics.failed_requests, 1);
         assert_eq!(metrics.timeout_requests, 1);
         assert_eq!(metrics.qps, 2.0);
+        assert_eq!(metrics.status_code_counts, vec![(200, 2), (503, 1)]);
         assert!(metrics.avg_latency_ms > 0.0);
     }
 }
