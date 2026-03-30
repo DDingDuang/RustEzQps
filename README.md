@@ -15,7 +15,7 @@
 
 - **🚀 Blazing Fast**: Powered by Rust's asynchronous runtime `tokio` and `reqwest` connection pooling, easily achieving tens of thousands of QPS on a single machine.
 - **📋 Smart Curl Parsing**: Paste `cURL (bash)` commands directly from your browser devtools. It automatically parses URL, Method, Headers, and Body.
-- **📊 Real-time Monitoring**: Visualizes QPS trends, latency distribution, and success/failure counts in real-time.
+- **📊 Real-time Monitoring**: Shows real-time QPS, latency percentiles, status code distribution, and success/failure counts.
 - **📉 Precision Statistics**: Uses `hdrhistogram` to calculate high-precision latency metrics like P50, P95, and P99.
 - **🖥️ Cross-Platform GUI**: Built on `eframe` (Immediate Mode GUI), supporting Windows, macOS, and Linux without runtime dependencies.
 - **🌐 Multi-language**: Built-in support for switching between English and Chinese.

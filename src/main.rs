@@ -1,4 +1,7 @@
-#![cfg_attr(all(not(debug_assertions), target_os = "windows"), windows_subsystem = "windows")]
+#![cfg_attr(
+    all(not(debug_assertions), target_os = "windows"),
+    windows_subsystem = "windows"
+)]
 
 mod app;
 mod curl_parser;
@@ -12,7 +15,8 @@ fn main() -> Result<(), eframe::Error> {
     let title = t(Language::ZhCn, I18nKey::AppTitle);
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1440.0, 700.0])
+            .with_inner_size([1120.0, 782.0])
+            .with_min_inner_size([850.0, 782.0])
             .with_title(title),
         ..Default::default()
     };
